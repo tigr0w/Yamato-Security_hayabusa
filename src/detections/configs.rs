@@ -14,9 +14,11 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::env::current_exe;
+use std::fs::File;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::{fs, process};
+use std::{fs, io, process};
 use terminal_size::{terminal_size, Width};
 use yaml_rust::{Yaml, YamlLoader};
 
@@ -39,6 +41,37 @@ lazy_static! {
         .match_kind(MatchKind::LeftmostLongest)
         .build(["🛂r", "🛂n", "🛂t"])
         .unwrap();
+    pub static ref ONE_CONFIG_MAP: HashMap<String, String> =
+        read_one_config_file(Path::new("rules_config_files.txt")).unwrap_or_default();
+}
+
+fn read_one_config_file(file_path: &Path) -> io::Result<HashMap<String, String>> {
+    let file = File::open(file_path)?;
+    let reader = io::BufReader::new(file);
+
+    let mut sections = HashMap::new();
+    let mut current_path = String::new();
+    let mut current_content = String::new();
+    let mut in_content = false;
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.starts_with("---FILE_START---") {
+            current_path.clear();
+            current_content.clear();
+            in_content = false;
+        } else if let Some(path) = line.strip_prefix("path: ") {
+            current_path = path.to_string();
+        } else if line.starts_with("---CONTENT---") {
+            in_content = true;
+        } else if line.starts_with("---FILE_END---") {
+            sections.insert(current_path.clone(), current_content.clone());
+        } else if in_content {
+            current_content.push_str(&line);
+            current_content.push('\n');
+        }
+    }
+    Ok(sections)
 }
 
 pub struct ConfigReader {
@@ -248,16 +281,24 @@ impl StoredStatic {
                         )
                         .unwrap()
                     });
-            if !geo_ip_file_path.exists() {
+            if !geo_ip_file_path.exists()
+                && !ONE_CONFIG_MAP.contains_key("geoip_field_mapping.yaml")
+            {
                 AlertMessage::alert(
                     "Could not find the geoip_field_mapping.yaml config file. Please run update-rules."
                 )
                 .ok();
                 process::exit(1);
             }
-            let geo_ip_mapping = if let Ok(loaded_yaml) =
-                YamlLoader::load_from_str(&fs::read_to_string(geo_ip_file_path).unwrap())
-            {
+            let contents = if ONE_CONFIG_MAP.contains_key("geoip_field_mapping.yaml") {
+                ONE_CONFIG_MAP
+                    .get("geoip_field_mapping.yaml")
+                    .unwrap()
+                    .as_str()
+            } else {
+                &fs::read_to_string(geo_ip_file_path).unwrap()
+            };
+            let geo_ip_mapping = if let Ok(loaded_yaml) = YamlLoader::load_from_str(contents) {
                 loaded_yaml
             } else {
                 AlertMessage::alert("Parse error in geoip_field_mapping.yaml.").ok();
@@ -788,7 +829,7 @@ fn check_thread_number(config: &Config) -> Option<usize> {
 pub enum Action {
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe csv-timeline <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe csv-timeline <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 290,
         disable_help_flag = true
@@ -798,7 +839,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe json-timeline <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe json-timeline <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 360,
         disable_help_flag = true
@@ -808,7 +849,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe logon-summary <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe logon-summary <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 383,
         disable_help_flag = true
@@ -818,7 +859,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe eid-metrics <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe eid-metrics <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 310,
         disable_help_flag = true
@@ -828,7 +869,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe pivot-keywords-list <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe pivot-keywords-list <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 420,
         disable_help_flag = true
@@ -838,7 +879,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe search <INPUT> <--keywords \"<KEYWORDS>\" OR --regex \"<REGEX>\"> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe search <INPUT> <--keywords \"<KEYWORDS>\" OR --regex \"<REGEX>\"> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 450,
         disable_help_flag = true
@@ -848,7 +889,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
         term_width = 400,
         display_order = 470,
         disable_help_flag = true
@@ -858,7 +899,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
         term_width = 400,
         display_order = 380,
         disable_help_flag = true
@@ -868,7 +909,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  {usage}\n\n{all-args}",
         term_width = 400,
         display_order = 451,
         disable_help_flag = true
@@ -886,7 +927,7 @@ pub enum Action {
 
     #[clap(
         author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-        help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe computer-metrics <INPUT> [OPTIONS]\n\n{all-args}",
+        help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe computer-metrics <INPUT> [OPTIONS]\n\n{all-args}",
         term_width = 400,
         display_order = 290,
         disable_help_flag = true
@@ -1733,7 +1774,7 @@ pub struct ComputerMetricsOption {
 #[derive(Parser, Clone, Debug)]
 #[clap(
     author = "Yamato Security (https://github.com/Yamato-Security/hayabusa - @SecurityYamato)",
-    help_template = "\nHayabusa v2.17.0 - HITCON Release\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe <COMMAND> [OPTIONS]\n  hayabusa.exe help <COMMAND> or hayabusa.exe <COMMAND> -h\n\n{all-args}{options}",
+    help_template = "\nHayabusa v2.18.0 - Dev Build\n{author-with-newline}\n{usage-heading}\n  hayabusa.exe <COMMAND> [OPTIONS]\n  hayabusa.exe help <COMMAND> or hayabusa.exe <COMMAND> -h\n\n{all-args}{options}",
     term_width = 400,
     disable_help_flag = true
 )]

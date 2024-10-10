@@ -8,7 +8,7 @@ use std::borrow::BorrowMut;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
 use std::fmt::Write as _;
-use std::io::{BufWriter, Write};
+use std::io::{copy, BufWriter, Write};
 use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::Arc;
@@ -29,25 +29,11 @@ use dialoguer::Confirm;
 use dialoguer::{theme::ColorfulTheme, Select};
 use evtx::{EvtxParser, ParserSettings, RecordAllocation};
 use hashbrown::{HashMap, HashSet};
-use indicatif::ProgressBar;
-use indicatif::{ProgressDrawTarget, ProgressStyle};
-use itertools::Itertools;
-use libmimalloc_sys::mi_stats_print_out;
-use mimalloc::MiMalloc;
-use nested::Nested;
-use num_format::{Locale, ToFormattedString};
-use rust_embed::Embed;
-use serde_json::{Map, Value};
-use termcolor::{BufferWriter, Color, ColorChoice};
-use tokio::runtime::Runtime;
-use tokio::spawn;
-use tokio::task::JoinHandle;
-
 use hayabusa::afterfact::{self, AfterfactInfo, AfterfactWriter};
 use hayabusa::debug::checkpoint_process_timer::CHECKPOINT;
 use hayabusa::detections::configs::{
     load_pivot_keywords, Action, ConfigReader, EventKeyAliasConfig, StoredStatic, TargetEventTime,
-    TargetIds, CURRENT_EXE_PATH, STORED_EKEY_ALIAS, STORED_STATIC,
+    TargetIds, CURRENT_EXE_PATH, ONE_CONFIG_MAP, STORED_EKEY_ALIAS, STORED_STATIC,
 };
 use hayabusa::detections::detection::{self, EvtxRecordInfo};
 use hayabusa::detections::message::{AlertMessage, DetectInfo, ERROR_LOG_STACK};
@@ -66,8 +52,22 @@ use hayabusa::timeline::computer_metrics::countup_event_by_computer;
 use hayabusa::{detections::configs, timeline::timelines::Timeline};
 use hayabusa::{detections::utils::write_color_buffer, filter};
 use hayabusa::{options, yaml};
+use indicatif::ProgressBar;
+use indicatif::{ProgressDrawTarget, ProgressStyle};
 #[cfg(target_os = "windows")]
 use is_elevated::is_elevated;
+use itertools::Itertools;
+use libmimalloc_sys::mi_stats_print_out;
+use mimalloc::MiMalloc;
+use nested::Nested;
+use num_format::{Locale, ToFormattedString};
+use rust_embed::Embed;
+use serde_json::{Map, Value};
+use termcolor::{BufferWriter, Color, ColorChoice};
+use tokio::runtime::Runtime;
+use tokio::spawn;
+use tokio::task::JoinHandle;
+use ureq::get;
 
 #[derive(Embed)]
 #[folder = "art/"]
@@ -172,6 +172,12 @@ impl App {
             return;
         }
 
+        if Path::new("encoded_rules.yml").exists() && Path::new("rules").exists() {
+            println!("You have the rules directory and encoded_rules.yml in your path. Please delete one of them.");
+            println!();
+            return;
+        }
+
         // カレントディレクトリ以外からの実行の際にrules-configオプションの指定がないとエラーが発生することを防ぐための処理
         if stored_static.config_path == Path::new("./rules/config") {
             stored_static.config_path =
@@ -267,9 +273,18 @@ impl App {
             Action::CsvTimeline(_) | Action::JsonTimeline(_) => {
                 // カレントディレクトリ以外からの実行の際にrulesオプションの指定がないとエラーが発生することを防ぐための処理
                 if stored_static.output_option.as_ref().unwrap().rules == Path::new("./rules") {
-                    stored_static.output_option.as_mut().unwrap().rules =
-                        utils::check_setting_path(&CURRENT_EXE_PATH.to_path_buf(), "rules", true)
-                            .unwrap();
+                    if Path::new("./encoded_rules.yml").exists() {
+                        stored_static.output_option.as_mut().unwrap().rules = check_setting_path(
+                            &CURRENT_EXE_PATH.to_path_buf(),
+                            "encoded_rules.yml",
+                            true,
+                        )
+                        .unwrap();
+                    } else {
+                        stored_static.output_option.as_mut().unwrap().rules =
+                            check_setting_path(&CURRENT_EXE_PATH.to_path_buf(), "rules", true)
+                                .unwrap();
+                    }
                 }
                 // rule configのフォルダ、ファイルを確認してエラーがあった場合は終了とする
                 if let Err(e) = utils::check_rule_config(&stored_static.config_path) {
@@ -434,6 +449,14 @@ impl App {
                     .to_str()
                     .unwrap(),
                 );
+                if Path::new("./encoded_rules.yml").exists() {
+                    stored_static.output_option.as_mut().unwrap().rules = check_setting_path(
+                        &CURRENT_EXE_PATH.to_path_buf(),
+                        "encoded_rules.yml",
+                        true,
+                    )
+                    .unwrap();
+                }
 
                 // pivot 機能でファイルを出力する際に同名ファイルが既に存在していた場合はエラー文を出して終了する。
                 let mut error_flag = false;
@@ -541,31 +564,74 @@ impl App {
                     _ => None,
                 };
                 // エラーが出た場合はインターネット接続がそもそもできないなどの問題点もあるためエラー等の出力は行わない
-                let latest_version_data = if let Ok(data) = Update::get_latest_hayabusa_version() {
-                    data
-                } else {
-                    None
-                };
+                let latest_version_data = Update::get_latest_hayabusa_version().unwrap_or_default();
                 let now_version = &format!("v{}", env!("CARGO_PKG_VERSION"));
                 stored_static.include_status.insert("*".into());
-                match Update::update_rules(update_target.unwrap().to_str().unwrap(), stored_static)
-                {
-                    Ok(output) => {
-                        if output != "You currently have the latest rules." {
+                let rule_encoded =
+                    check_setting_path(&CURRENT_EXE_PATH.to_path_buf(), "encoded_rules.yml", true)
+                        .unwrap();
+                if rule_encoded.exists() {
+                    let url = "https://raw.githubusercontent.com/Yamato-Security/hayabusa-encoded-rules/main/encoded_rules.yml";
+                    match get(url).call() {
+                        Ok(res) => {
+                            let mut dst = File::create(Path::new("./encoded_rules.yml")).unwrap();
+                            copy(&mut res.into_reader(), &mut dst).unwrap();
                             write_color_buffer(
                                 &BufferWriter::stdout(ColorChoice::Always),
                                 None,
-                                "Rules updated successfully.",
+                                "Rules file encoded_rules.yml updated successfully.",
                                 true,
                             )
                             .ok();
                         }
-                    }
-                    Err(e) => {
-                        if e.message().is_empty() {
+                        Err(_) => {
                             AlertMessage::alert("Failed to update rules.").ok();
-                        } else {
-                            AlertMessage::alert(&format!("Failed to update rules. {e:?}  ")).ok();
+                        }
+                    }
+
+                    if !ONE_CONFIG_MAP.is_empty() {
+                        let url = "https://raw.githubusercontent.com/Yamato-Security/hayabusa-encoded-rules/refs/heads/main/rules_config_files.txt";
+                        match get(url).call() {
+                            Ok(res) => {
+                                let mut dst =
+                                    File::create(Path::new("./rules_config_files.txt")).unwrap();
+                                copy(&mut res.into_reader(), &mut dst).unwrap();
+                                write_color_buffer(
+                                    &BufferWriter::stdout(ColorChoice::Always),
+                                    None,
+                                    "Config file rules_config_files.txt updated successfully.",
+                                    true,
+                                )
+                                .ok();
+                            }
+                            Err(_) => {
+                                AlertMessage::alert("Failed to update config file.").ok();
+                            }
+                        }
+                    }
+                } else {
+                    match Update::update_rules(
+                        update_target.unwrap().to_str().unwrap(),
+                        stored_static,
+                    ) {
+                        Ok(output) => {
+                            if output != "You currently have the latest rules." {
+                                write_color_buffer(
+                                    &BufferWriter::stdout(ColorChoice::Always),
+                                    None,
+                                    "Rules updated successfully.",
+                                    true,
+                                )
+                                .ok();
+                            }
+                        }
+                        Err(e) => {
+                            if e.message().is_empty() {
+                                AlertMessage::alert("Failed to update rules.").ok();
+                            } else {
+                                AlertMessage::alert(&format!("Failed to update rules. {e:?}  "))
+                                    .ok();
+                            }
                         }
                     }
                 }
