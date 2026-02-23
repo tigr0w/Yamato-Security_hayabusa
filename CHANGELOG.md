@@ -1,5 +1,11 @@
 # Changes
 
+## 3.8.1 [2026/02/24] - Spring Hayfever Release
+
+**Bug Fixes:**
+
+Fixed multiple progress bars issue. (#1740) (@fukusuket)
+
 ## 3.8.0 [2026/01/31] - Winter Release
 
 **Bug Fixes:**

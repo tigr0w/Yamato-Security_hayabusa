@@ -2869,7 +2869,20 @@ Any hostnames added to the critical_systems.txt file will have all alerts above 
                 Some(evtx_parser)
             }
             Err(e) => {
-                eprintln!("{e}");
+                let errmsg = format!(
+                    "Failed to open event file.\nEventFile: {}\nError: {}\n",
+                    evtx_filepath.display(),
+                    e
+                );
+                if stored_static.verbose_flag {
+                    AlertMessage::alert(&errmsg).ok();
+                }
+                if !stored_static.quiet_errors_flag {
+                    ERROR_LOG_STACK
+                        .lock()
+                        .unwrap()
+                        .push(format!("[ERROR] {errmsg}"));
+                }
                 None
             }
         }
