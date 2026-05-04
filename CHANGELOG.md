@@ -1,5 +1,11 @@
 # Changes
 
+## x.x.x
+
+**Bug Fixes:**
+
+- MITRE ATT&CK Tactics were not line-breaking properly in HTML reports (#1751) (@fukusuket)
+
 ## 3.9.0 [2026/04/29]
 
 **Enchancements:**
